@@ -36,6 +36,9 @@ class ServiceDiscovery(object):
 
     def __defaults(self):
         self._routing_policy = 'MULTIVALUE'
+        self.health_check_custom_config = {
+                "FailureThreshold": 1,
+                }
         self._namespace = None
         self._name = None
         self._namespace_id = None
@@ -152,6 +155,7 @@ class ServiceDiscovery(object):
                 'RoutingPolicy': self._routing_policy,
                 'DnsRecords': self.dns_records
                 }
+        r['HealthCheckCustomConfig'] = self.health_check_custom_config
         return r
 
     def create(self):

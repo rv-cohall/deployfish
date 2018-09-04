@@ -93,14 +93,17 @@ class Config(object):
             self.__do_dict(service, replacers)
 
     def replace_terraform(self):
-        for service in self.__raw['services']:
+        if 'TERRAFORM_ENVIRONMENT' in os.environ:
             replacers = {
-                'environment': service.get('environment', 'prod'),
-                'service-name': service['name'],
-                'cluster-name': service['cluster']
+                'environment': os.getenv('TERRAFORM_ENVIRONMENT'),
             }
+        else:
+            replacers = {
+                'environment': "prod",
+            }
+        for service in self.__raw['services']:
             if 'workspace' in self.__raw['terraform']:
-                self.__raw['terraform']['workspace'].format(**replacers)
+                self.__raw['terraform']['workspace'] = self.__raw['terraform']['workspace'].format(**replacers)
             else:
                 self.__raw['terraform']['statefile'] = self.__raw['terraform']['statefile'].format(**replacers)
 
