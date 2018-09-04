@@ -35,6 +35,7 @@ class TestContainerDefinition_load_yaml(unittest.TestCase):
 
     def test_environment_simple_interpolation(self):
         self.assertEqual(self.config.get_service('cit-auth-prod')['config'][0], 'FOOBAR=hi_mom')
+        self.assertEqual(self.config.get_service('cit-auth-prod')['config'][2], 'FOO_BAR_PREFIX=oh_no/test')
 
 
 class TestContainerDefinition_load_yaml_no_interpolate(unittest.TestCase):
@@ -62,6 +63,7 @@ class TestContainerDefinition_load_yaml_no_interpolate(unittest.TestCase):
 
     def test_environment_simple_interpolation(self):
         self.assertEqual(self.config.get_service('cit-auth-prod')['config'][0], 'FOOBAR=${env.FOOBAR_ENV}')
+        self.assertEqual(self.config.get_service('cit-auth-prod')['config'][2], 'FOO_BAR_PREFIX=${env.FOO_BAR_PREFIX_ENV}/test')
 
 
 class TestTunnelParameters_load_yqml(unittest.TestCase):
@@ -73,7 +75,7 @@ class TestTunnelParameters_load_yqml(unittest.TestCase):
         self.config = Config(filename=config_yml, env_file=env_file, interpolate=False)
 
     def test_tunnel_find_instance(self):
-        yml = self.config.get_category_item('tunnels', 'test')
+        yml = self.config.get_section_item('tunnels', 'test')
         self.assertEqual(yml['service'], 'cit-auth-prod')
         self.assertEqual(yml['host'], 'config.DB_HOST')
         self.assertEqual(yml['port'], 3306)

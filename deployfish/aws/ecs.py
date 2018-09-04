@@ -14,9 +14,9 @@ from tempfile import NamedTemporaryFile
 import time
 import tzlocal
 
-import boto3
 import botocore
 
+from deployfish.aws import get_boto3_session
 from deployfish.aws.asg import ASG
 from deployfish.aws.appscaling import ApplicationAutoscaling
 from deployfish.aws.systems_manager import ParameterStore
@@ -64,7 +64,6 @@ class LogConfiguration(object):
     """
 
     def __init__(self, aws={}, yml={}):
-
         if aws:
             self.from_aws(aws)
 
@@ -106,14 +105,15 @@ class ContainerDefinition(VolumeMixin):
         :param yml: a container definition from our deployfish.yml file
         :type yml: dict
         """
-        self.ecs = boto3.client('ecs')
-        self.ecr = boto3.client('ecr')
+        self.ecs = get_boto3_session().client('ecs')
+        self.ecr = get_boto3_session().client('ecr')
         self.__aws_container_definition = aws
 
         self._name = None
         self._cpu = None
         self._image = None
         self._memory = None
+        self._memoryReservation = None
         self._command = None
         self._entryPoint = None
         self._essential = True
@@ -132,11 +132,11 @@ class ContainerDefinition(VolumeMixin):
         if yml:
             self.from_yaml(yml)
 
-    def __getattr__(self, attr): #NOQA
+    def __getattr__(self, attr):
         try:
             return self.__getattribute__(attr)
         except AttributeError:
-            if attr in ['cpu', 'dockerLabels', 'essential', 'image', 'links', 'memory', 'name']:
+            if attr in ['cpu', 'dockerLabels', 'essential', 'image', 'links', 'memory', 'memoryReservation', 'name']:
                 if (not getattr(self, '_' + attr) and self.__aws_container_definition and attr in self.__aws_container_definition):
                     setattr(self, "_" + attr, self.__aws_container_definition[attr])
                 return getattr(self, '_' + attr)
@@ -150,7 +150,7 @@ class ContainerDefinition(VolumeMixin):
                 if (not self._portMappings and self.__aws_container_definition and 'portMappings' in self.__aws_container_definition):
                     ports = self.__aws_container_definition['portMappings']
                     for mapping in ports:
-                        self._portMappings.append('{}:{}/{}'.format(mapping['hostPort'],  mapping['containerPort'], mapping['protocol']))
+                        self._portMappings.append('{}:{}/{}'.format(mapping['hostPort'], mapping['containerPort'], mapping['protocol']))
                 return self._portMappings
             elif attr == 'command':
                 if (not self._command and self.__aws_container_definition and 'command' in self.__aws_container_definition):
@@ -173,7 +173,7 @@ class ContainerDefinition(VolumeMixin):
                 raise AttributeError
 
     def __setattr__(self, attr, value):
-        if attr in ['command', 'cpu', 'dockerLabels', 'entryPoint', 'environment', 'essential', 'image', 'links', 'memory', 'name', 'ulimits']:
+        if attr in ['command', 'cpu', 'dockerLabels', 'entryPoint', 'environment', 'essential', 'image', 'links', 'memory', 'memoryReservation', 'name', 'ulimits']:
             setattr(self, "_" + attr, value)
         else:
             super(ContainerDefinition, self).__setattr__(attr, value)
@@ -243,7 +243,10 @@ class ContainerDefinition(VolumeMixin):
         r['name'] = self.name
         r['image'] = self.image
         r['cpu'] = self.cpu
-        r['memory'] = self.memory
+        if self.memory is not None:
+            r['memory'] = self.memory
+        if self.memoryReservation is not None:
+            r['memoryReservation'] = self.memoryReservation
         if self.portMappings:
             r['portMappings'] = []
             for mapping in self.portMappings:
@@ -280,11 +283,11 @@ class ContainerDefinition(VolumeMixin):
         if self.ulimits:
             r['ulimits'] = []
             for limit in self.ulimits:
-                l = {}
-                l['name'] = limit['name']
-                l['softLimit'] = limit['soft']
-                l['hardLimit'] = limit['hard']
-                r['ulimits'].append(l)
+                lc = {}
+                lc['name'] = limit['name']
+                lc['softLimit'] = limit['soft']
+                lc['hardLimit'] = limit['hard']
+                r['ulimits'].append(lc)
         if self.dockerLabels:
             r['dockerLabels'] = self.dockerLabels
         if self.volumes:
@@ -331,14 +334,14 @@ class ContainerDefinition(VolumeMixin):
         :param family_revisions: dict of `<family>:<revision>` strings
         :type family_revisions: list of strings
         """
-        l = {}
+        labels = {}
         for key, value in self.dockerLabels.items():
             if not key.startswith('edu.caltech.task'):
-                l[key] = value
+                labels[key] = value
         for revision in family_revisions:
             family = revision.split(':')[0]
-            l['edu.caltech.task.{}.id'.format(family)] = revision
-        self.dockerLabels = l
+            labels['edu.caltech.task.{}.id'.format(family)] = revision
+        self.dockerLabels = labels
 
     def get_helper_tasks(self):
         """
@@ -358,11 +361,11 @@ class ContainerDefinition(VolumeMixin):
 
         :rtype: dict of strings
         """
-        l = {}
+        labels = {}
         for key, value in self.dockerLabels.items():
             if key.startswith('edu.caltech.task'):
-                l[value.split(':')[0]] = value
-        return l
+                labels[value.split(':')[0]] = value
+        return labels
 
     def render(self):
         return(self.__render())
@@ -383,7 +386,9 @@ class ContainerDefinition(VolumeMixin):
             self.cpu = 256  # Give a reasonable default if none was specified
         if 'memory' in yml:
             self.memory = yml['memory']
-        else:
+        if 'memoryReservation' in yml:
+            self.memoryReservation = yml['memoryReservation']
+        if self.memory is None and self.memoryReservation is None:
             self.memory = 512  # Give a reasonable default if none was specified
         if 'command' in yml:
             self.command = yml['command']
@@ -461,7 +466,7 @@ class TaskDefinition(VolumeMixin):
         )
 
     def __init__(self, task_definition_id=None, yml={}):
-        self.ecs = boto3.client('ecs')
+        self.ecs = get_boto3_session().client('ecs')
 
         self.__defaults()
         if task_definition_id:
@@ -678,7 +683,7 @@ class Task(object):
         :type yml: dict
         """
         self.clusterName = clusterName
-        self.ecs = boto3.client('ecs')
+        self.ecs = get_boto3_session().client('ecs')
         self.commands = {}
         self.from_yaml(yml)
         self.desired_task_definition = TaskDefinition(yml=yml)
@@ -774,8 +779,12 @@ class Service(object):
             service
         )
 
-    def __init__(self, yml={}):
-        self.ecs = boto3.client('ecs')
+    def __init__(self, service_name, config=None):
+        yml = config.get_service(service_name)
+        self.ecs = get_boto3_session().client('ecs')
+
+        self.__aws_service = None
+
         self.asg = None
         self.scaling = None
         self.serviceDiscovery = None
@@ -785,10 +794,9 @@ class Service(object):
         self.host_ips = None
         self._serviceName = None
         self._clusterName = None
-        self.__aws_service = None
         self._desired_count = 0
-        self._minimumHealthyPercent = 0
-        self._maximumPercent = 200
+        self._minimumHealthyPercent = None
+        self._maximumPercent = None
         self._launchType = 'EC2'
         self.__service_discovery = []
         self.__defaults()
@@ -799,6 +807,9 @@ class Service(object):
         self._roleArn = None
         self.__load_balancer = {}
         self.__vpc_configuration = {}
+        self.__placement_constraints = []
+        self.__placement_strategy = []
+        self.__schedulingStrategy = "REPLICA"
 
     def __get_service(self):
         """
@@ -825,7 +836,16 @@ class Service(object):
         try:
             return self.__getattribute__(attr)
         except AttributeError:
-            if attr in ['deployments', 'taskDefinition', 'clusterArn', 'desiredCount', 'runningCount', 'pendingCount', 'networkConfiguration', 'executionRoleArn']:
+            if attr in [
+                'deployments',
+                'taskDefinition',
+                'clusterArn',
+                'desiredCount',
+                'runningCount',
+                'pendingCount',
+                'networkConfiguration',
+                'executionRoleArn'
+            ]:
                 if self.__aws_service:
                     return self.__aws_service[attr]
                 return None
@@ -873,23 +893,30 @@ class Service(object):
     @property
     def maximumPercent(self):
         """
-        For services yet to be created, return the what we want the minimum count
-        to be when we create the service.
+        If maximumPercent is defined in deployfish.yml for our service
+        return that value.
 
-        For services already existing in AWS, return the actual maximum percent.
+        If it is not defined in deployfish.yml, but it is defined in AWS, return
+        the AWS maximumPercent value.
+
+        Else, return 200.
 
         :rtype: int
         """
-        if self.__aws_service:
-            self._maximumPercent = self.__aws_service['deploymentConfiguration']['maximumPercent']
+        if not self._maximumPercent:
+            if self.__aws_service:
+                self._maximumPercent = self.__aws_service['deploymentConfiguration']['maximumPercent']
+            else:
+                # Give a reasonable default if it was not defined in deployfish.yml
+                self._maximumPercent = 200
         return self._maximumPercent
 
     @maximumPercent.setter
     def maximumPercent(self, maximumPercent):
         """
-        Set the maximum percent of tasks this service is allowed to be in the RUNNING
-        or PENDING state during a deployment.  Setting this
-        has no effect if the service already exists.
+        Set the maximum percent of tasks this service is allowed to be in the
+        RUNNING or PENDING state during a deployment.  Setting this has no
+        effect if the service already exists.
 
         :param maximumPercent: Set the maximum percent of tasks this service is allowed to run
         :type count: int
@@ -899,23 +926,30 @@ class Service(object):
     @property
     def minimumHealthyPercent(self):
         """
-        For services yet to be created, return the what we want the minimum count
-        to be when we create the service.
+        If minimumHealthyPercent is defined in deployfish.yml for our service,
+        return that value.
 
-        For services already existing in AWS, return the actual minimum capacity.
+        If it is not defined in deployfish.yml, but it is defined in AWS, return
+        the AWS minimumHealthyPercent value.
+
+        Else, return 0.
 
         :rtype: int
         """
-        if self.__aws_service:
-            self._minimumHealthyPercent = self.__aws_service['deploymentConfiguration']['minimumHealthyPercent']
+        if not self._minimumHealthyPercent:
+            if self.__aws_service:
+                self._minimumHealthyPercent = self.__aws_service['deploymentConfiguration']['minimumHealthyPercent']
+            else:
+                # Give a reasonable default if it was not defined in deployfish.yml
+                self._minimumHealthyPercent = 0
         return self._minimumHealthyPercent
 
     @minimumHealthyPercent.setter
     def minimumHealthyPercent(self, minimumHealthyPercent):
         """
-        Set the minimum percent of tasks this service must maintain in the RUNNING
-        or PENDING state during a deployment.  Setting this
-        has no effect if the service already exists.
+        Set the minimum percent of tasks this service must maintain in the
+        RUNNING or PENDING state during a deployment.  Setting this has no
+        effect if the service already exists.
 
         :param maximumPercent: Set the minimum percent of tasks this service must maintain
         :type count: int
@@ -1109,6 +1143,51 @@ class Service(object):
                 return self.active_task_definition.containers[0].image.split(":")[1]
         return None
 
+    @property
+    def placementConstraints(self):
+        if self.__aws_service:
+            if self.__aws_service['placementConstraints']:
+                self.__placement_constraints = self.__aws_service['placementConstraints']
+        return self.__placement_constraints
+
+    @placementConstraints.setter
+    def placementConstraints(self, placementConstraints):
+        if isinstance(placementConstraints, list):
+            self.__placement_constraints = []
+            for placement in placementConstraints:
+                configDict = {'type': placement['type']}
+                if 'expression' in placement:
+                    configDict['expression'] = placement['expression']
+                self.__placement_constraints.append(configDict)
+
+    @property
+    def placementStrategy(self):
+        if self.__aws_service:
+            if self.__aws_service['placementStrategy']:
+                self.__placement_strategy = self.__aws_service['placementStrategy']
+        return self.__placement_strategy
+
+    @placementStrategy.setter
+    def placementStrategy(self, placementStrategy):
+        if isinstance(placementStrategy, list):
+            self.__placement_strategy = []
+            for placement in placementStrategy:
+                configDict = {'type': placement['type']}
+                if 'field' in placement:
+                    configDict['field'] = placement['field']
+                self.__placement_strategy.append(configDict)
+
+    @property
+    def schedulingStrategy(self):
+        if self.__aws_service:
+            if self.__aws_service['schedulingStrategy']:
+                self.__schedulingStrategy = self.__aws_service['schedulingStrategy']
+        return self.__schedulingStrategy
+
+    @schedulingStrategy.setter
+    def schedulingStrategy(self, schedulingStrategy):
+        self.__schedulingStrategy = schedulingStrategy
+
     def __render(self, task_definition_id):
         """
         Generate the dict we will pass to boto3's `create_service()`.
@@ -1140,7 +1219,8 @@ class Service(object):
                 'awsvpcConfiguration': self.vpc_configuration
             }
         r['taskDefinition'] = task_definition_id
-        r['desiredCount'] = self.count
+        if self.schedulingStrategy != "DAEMON":
+            r['desiredCount'] = self.count
         r['clientToken'] = self.client_token
         if self.__service_discovery:
             r['serviceRegistries'] = self.__service_discovery
@@ -1148,6 +1228,12 @@ class Service(object):
             'maximumPercent': self.maximumPercent,
             'minimumHealthyPercent': self.minimumHealthyPercent
         }
+        if len(self.placementConstraints) > 0:
+            r['placementConstraints'] = self.placementConstraints
+        if len(self.placementStrategy) > 0:
+            r['placementStrategy'] = self.placementStrategy
+        if self.schedulingStrategy:
+            r['schedulingStrategy'] = self.schedulingStrategy
         return r
 
     def from_yaml(self, yml):
@@ -1200,9 +1286,17 @@ class Service(object):
                 self.serviceDiscovery = ServiceDiscovery(None, yml=yml['service_discovery'])
             elif 'service_discovery' in yml:
                 print("Ignoring service discovery config since network mode is not awsvpc")
-
-        self._count = yml['count']
-        self._desired_count = self._count
+        if 'placement_constraints' in yml:
+            self.placementConstraints = yml['placement_constraints']
+        if 'placement_strategy' in yml:
+            self.placementStrategy = yml['placement_strategy']
+        if 'scheduling_strategy' in yml and yml['scheduling_strategy'] == 'DAEMON':
+            self.schedulingStrategy = yml['scheduling_strategy']
+            self._count = 'automatically'
+            self.maximumPercent = 100
+        else:
+            self._count = yml['count']
+            self._desired_count = self._count
         self.desired_task_definition = TaskDefinition(yml=yml)
         deployfish_environment = {
             "DEPLOYFISH_SERVICE_NAME": yml['name'],
@@ -1284,27 +1378,33 @@ class Service(object):
 
     def update(self):
         """
-        Update the task definition for our service, and modify Application Scaling
-        appropriately.
+        Update the service and Application Scaling setup (if any).
 
         If we currently don't have Application Scaling enabled, but we want it now,
         set it up appropriately.
 
         If we currently do have Application Scaling enabled, but it's setup differently
-        than we want it, updated it appropriately.
+        than we want it, update it appropriately.
 
         If we currently do have Application Scaling enabled, but we no longer want it,
         remove Application Scaling.
         """
-        self.update_task_definition()
+        self.update_service()
         self.update_scaling()
 
-    def update_task_definition(self):
+    def update_service(self):
+        """
+        Update the taskDefinition and deploymentConfiguration on the service.
+        """
         self.__create_tasks_and_task_definition()
         self.ecs.update_service(
             cluster=self.clusterName,
             service=self.serviceName,
-            taskDefinition=self.desired_task_definition.arn
+            taskDefinition=self.desired_task_definition.arn,
+            deploymentConfiguration={
+                'maximumPercent': self.maximumPercent,
+                'minimumHealthyPercent': self.minimumHealthyPercent
+            }
         )
         self.__defaults()
         self.from_aws()
@@ -1393,7 +1493,7 @@ class Service(object):
         if lbtype == 'elb':
             print("")
             print("Load Balancer")
-            elb = boto3.client('elb')
+            elb = get_boto3_session().client('elb')
             response = elb.describe_instance_health(LoadBalancerName=self.load_balancer['load_balancer_name'])
             states = response['InstanceStates']
             if len(states) < desired_count:
@@ -1405,7 +1505,7 @@ class Service(object):
         elif lbtype == 'alb':
             print("")
             print("Load Balancer")
-            alb = boto3.client('elbv2')
+            alb = get_boto3_session().client('elbv2')
             response = alb.describe_target_health(
                 TargetGroupArn=self.load_balancer['target_group_arn']
             )
@@ -1525,8 +1625,8 @@ class Service(object):
         """
         self._search_hosts()
         instances = self.hosts.values()
-        ec2 = boto3.client('ec2')
-        response = ec2.describe_instances(InstanceIds=instances)
+        ec2 = get_boto3_session().client('ec2')
+        response = ec2.describe_instances(InstanceIds=list(instances))
         if response['Reservations']:
             instances = response['Reservations']
             return instances
@@ -1591,7 +1691,7 @@ class Service(object):
         ip = None
         vpc_id = None
         bastion = ''
-        ec2 = boto3.client('ec2')
+        ec2 = get_boto3_session().client('ec2')
         response = ec2.describe_instances(InstanceIds=[instance_id])
         if response['Reservations']:
             instances = response['Reservations'][0]['Instances']
