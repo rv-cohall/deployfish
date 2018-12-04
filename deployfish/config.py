@@ -53,14 +53,20 @@ class Config(object):
     TERRAFORM_RE = re.compile('\$\{terraform.(?P<key>[A-Za-z0-9_]+)\}')
     ENVIRONMENT_RE = re.compile('\$\{env.(?P<key>.+)\}')
 
-    def __init__(self, filename='deployfish.yml', env_file=None, import_env=False, interpolate=True, tfe_token=None, use_aws_section=True):
-        self.__raw = self.load_config(filename)
+    def __init__(self, filename='deployfish.yml', env_file=None, import_env=False, interpolate=True, tfe_token=None, use_aws_section=True, raw_config=None, boto3_session=None):
+        #Load a raw config if it was provided
+        if raw_config:
+            self.__raw = raw_config
+        else:
+            self.__raw = self.load_config(filename)
+
         # Setup our boto3_session here because we might need it when retrieving
         # the terraform file from S3
+
         if use_aws_section:
-            build_boto3_session(self)
+            build_boto3_session(self, boto3_session_override=boto3_session)
         else:
-            build_boto3_session()
+            build_boto3_session(boto3_session_override=boto3_session)
         self.import_env = import_env
         self.env_file = env_file
         self.tfe_token = tfe_token
@@ -167,7 +173,12 @@ class Config(object):
         if self.terraform:
             m = self.TERRAFORM_RE.search(value)
             if m:
-                raw[key] = self.TERRAFORM_RE.sub(self.terraform.lookup(m.group('key'), replacers), value)
+                tfvalue = self.terraform.lookup(m.group('key'), replacers)
+                if isinstance(tfvalue, (list, tuple, dict)):
+                    raw[key] = tfvalue
+                    self.__replace(raw, key, tfvalue, replacers)
+                    return
+                raw[key] = self.TERRAFORM_RE.sub(tfvalue, value)
                 value = raw[key]
         m = self.ENVIRONMENT_RE.search(value)
         if m:
